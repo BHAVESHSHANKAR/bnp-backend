@@ -1,30 +1,42 @@
 const express = require('express');
 const cors = require('cors');
-const bodyParser = require('body-parser');
 const { Pool } = require('pg');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 6969;
 
-// Optimized Database Configuration for Multiple Users
+// Optimized Database Configuration with Better Error Handling
 const pool = new Pool({
     connectionString: process.env.NEON_URI,
     ssl: {
         rejectUnauthorized: false
     },
-    connectionTimeoutMillis: 15000,
-    idleTimeoutMillis: 60000,
-    max: 20, // Increased pool size for multiple users
-    min: 2, // Keep minimum connections alive
-    acquireTimeoutMillis: 30000,
+    connectionTimeoutMillis: 30000, // Increased timeout
+    idleTimeoutMillis: 300000, // 5 minutes idle timeout
+    max: 10, // Reduced pool size for stability
+    min: 1, // Minimum connections
+    acquireTimeoutMillis: 60000, // Increased acquire timeout
     createTimeoutMillis: 30000,
     destroyTimeoutMillis: 5000,
     reapIntervalMillis: 1000,
-    createRetryIntervalMillis: 200,
-    allowExitOnIdle: false, // Keep connections alive for better performance
+    createRetryIntervalMillis: 500,
+    allowExitOnIdle: false,
     keepAlive: true,
-    keepAliveInitialDelayMillis: 0
+    keepAliveInitialDelayMillis: 1000
+});
+
+// Add error handling for pool
+pool.on('error', (err) => {
+    console.error('Unexpected error on idle client', err);
+});
+
+pool.on('connect', () => {
+    console.log('Database pool connected');
+});
+
+pool.on('remove', () => {
+    console.log('Database client removed from pool');
 });
 
 // Simplified database connection test
@@ -40,44 +52,22 @@ const testDatabaseConnection = async () => {
     }
 };
 
-// Initialize database tables silently
+// Initialize database tables for admin system
 const initializeDatabase = async () => {
-    const createTableQuery = `
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      first_name VARCHAR(100) NOT NULL,
-      last_name VARCHAR(100) NOT NULL,
-      email VARCHAR(255) UNIQUE NOT NULL,
-      password VARCHAR(255) NOT NULL,
-      mobile_number VARCHAR(20) NOT NULL,
-      country VARCHAR(100) NOT NULL,
-      date_of_birth DATE NOT NULL,
-      is_verified BOOLEAN DEFAULT FALSE,
-      verification_token VARCHAR(255),
-      verification_token_expires TIMESTAMP,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `;
-
-    const createIndexesQueries = [
-        'CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);',
-        'CREATE INDEX IF NOT EXISTS idx_users_mobile ON users(mobile_number);',
-        'CREATE INDEX IF NOT EXISTS idx_users_name ON users(first_name, last_name);',
-        'CREATE INDEX IF NOT EXISTS idx_users_country ON users(country);',
-        'CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);',
-        'CREATE INDEX IF NOT EXISTS idx_users_dob ON users(date_of_birth);',
-        'CREATE INDEX IF NOT EXISTS idx_users_verification_token ON users(verification_token);',
-        'CREATE INDEX IF NOT EXISTS idx_users_is_verified ON users(is_verified);'
-    ];
-
     try {
-        await pool.query(createTableQuery);
-        for (const indexQuery of createIndexesQueries) {
-            await pool.query(indexQuery);
-        }
+        // Initialize Admin model and create table
+        const Admin = require('./models/Admin');
+        const adminModel = new Admin(pool);
+        await adminModel.createTable();
+
+        // Initialize File model and create table
+        const File = require('./models/File');
+        const fileModel = new File(pool);
+        await fileModel.createTable();
+        
         return true;
     } catch (error) {
+        console.error('Database initialization failed:', error);
         return false;
     }
 };
@@ -85,15 +75,27 @@ const initializeDatabase = async () => {
 // Make pool available globally
 global.dbPool = pool;
 
-const userRoutes = require('./routes/UserRoutes');
+const adminRoutes = require('./routes/AdminRoutes');
+const fileRoutes = require('./routes/FileRoutes');
 
-// Optimized Middleware for Multiple Users
+// Middleware for Admin System
 app.use(cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-    credentials: true
+    origin: [
+        'http://localhost:3000',
+        'http://localhost:3001', 
+        'http://localhost:8080',
+        'http://127.0.0.1:3000',
+        'http://127.0.0.1:3001',
+        'http://127.0.0.1:8080',
+        process.env.FRONTEND_URL
+    ].filter(Boolean),
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    exposedHeaders: ['Content-Disposition']
 }));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '50gb' })); // Increased limit for large files
+app.use(express.urlencoded({ extended: true, limit: '50gb' })); // Increased limit for large files
 
 // Security and performance middleware
 app.use((req, res, next) => {
@@ -103,13 +105,24 @@ app.use((req, res, next) => {
     next();
 });
 
-// Simple rate limiting for multiple users
+// Rate limiting for admin system
 const rateLimitMap = new Map();
+
+// Clean up expired entries every 5 minutes to prevent memory leaks
+setInterval(() => {
+    const now = Date.now();
+    for (const [ip, data] of rateLimitMap.entries()) {
+        if (now > data.resetTime) {
+            rateLimitMap.delete(ip);
+        }
+    }
+}, 5 * 60 * 1000);
+
 app.use((req, res, next) => {
-    const clientIP = req.ip || req.connection.remoteAddress;
+    const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
     const now = Date.now();
     const windowMs = 60000; // 1 minute
-    const maxRequests = 100; // requests per minute per IP
+    const maxRequests = 50; // Reduced for admin system - requests per minute per IP
 
     if (!rateLimitMap.has(clientIP)) {
         rateLimitMap.set(clientIP, { count: 1, resetTime: now + windowMs });
@@ -132,23 +145,46 @@ app.use((req, res, next) => {
     next();
 });
 
-// Request timeout middleware
+// Request timeout middleware with better handling
 app.use((req, res, next) => {
-    res.setTimeout(30000, () => {
-        res.status(408).json({ success: false, message: 'Request timeout' });
+    // Set different timeouts for different routes
+    let timeoutMs = 30000; // Default 30 seconds
+    
+    if (req.path.includes('/upload')) {
+        timeoutMs = 300000; // 5 minutes for file uploads
+    } else if (req.path.includes('/download')) {
+        timeoutMs = 120000; // 2 minutes for downloads
+    }
+    
+    const timeout = setTimeout(() => {
+        if (!res.headersSent) {
+            res.status(408).json({ 
+                success: false, 
+                message: 'Request timeout',
+                timeout: timeoutMs / 1000 + ' seconds'
+            });
+        }
+    }, timeoutMs);
+    
+    // Clear timeout when response is finished
+    res.on('finish', () => {
+        clearTimeout(timeout);
     });
+    
     next();
 });
 
 // Routes
-app.use('/api/users', userRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/files', fileRoutes);
 
 // Health check
 app.get('/', (req, res) => {
     res.json({
-        message: 'Backend server is running!',
+        message: 'Admin Backend Server is running!',
         timestamp: new Date().toISOString(),
-        status: 'healthy'
+        status: 'healthy',
+        system: 'admin-only'
     });
 });
 
