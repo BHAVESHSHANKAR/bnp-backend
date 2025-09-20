@@ -284,7 +284,9 @@ class File {
                 FROM customer_files cf
                 JOIN admins a ON cf.admin_id = a.id
                 WHERE cf.admin_id = $1 AND cf.is_active = true
+                  AND cf.upload_timestamp >= NOW() - INTERVAL '24 hours'
                 ORDER BY cf.upload_timestamp DESC
+                LIMIT 100
             `;
 
             const result = await this.pool.query(query, [adminId]);
@@ -530,8 +532,10 @@ class File {
                 FROM ml_results ml
                 JOIN admins a ON ml.admin_id = a.id
                 LEFT JOIN admin_decisions ad ON ml.id = ad.ml_result_id
-                WHERE ad.id IS NULL
+                WHERE ad.id IS NULL 
+                  AND ml.processed_at >= NOW() - INTERVAL '24 hours'
                 ORDER BY ml.processed_at DESC
+                LIMIT 50
             `;
 
             const result = await this.pool.query(query);

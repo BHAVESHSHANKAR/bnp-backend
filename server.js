@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
@@ -106,49 +107,48 @@ app.use((req, res, next) => {
     next();
 });
 
-// Rate limiting for admin system
-const rateLimitMap = new Map();
-
-// Clean up expired entries every 5 minutes to prevent memory leaks
-setInterval(() => {
-    const now = Date.now();
-    for (const [ip, data] of rateLimitMap.entries()) {
-        if (now > data.resetTime) {
-            rateLimitMap.delete(ip);
-        }
-    }
-}, 5 * 60 * 1000);
+// Simple rate limiting - 100 requests per minute (very generous)
+const requestCounts = new Map();
+const RATE_LIMIT = 100;
+const RATE_WINDOW = 60000; // 1 minute
 
 app.use((req, res, next) => {
-    const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
+    const clientIP = req.ip || req.connection.remoteAddress;
     const now = Date.now();
-    const windowMs = 60000; // 1 minute
-    const maxRequests = 50; // Reduced for admin system - requests per minute per IP
-
-    if (!rateLimitMap.has(clientIP)) {
-        rateLimitMap.set(clientIP, { count: 1, resetTime: now + windowMs });
-    } else {
-        const clientData = rateLimitMap.get(clientIP);
-        if (now > clientData.resetTime) {
-            clientData.count = 1;
-            clientData.resetTime = now + windowMs;
-        } else {
-            clientData.count++;
-            if (clientData.count > maxRequests) {
-                return res.status(429).json({
-                    success: false,
-                    message: 'Too many requests, please try again later'
-                });
-            }
+    
+    // Clean old entries
+    for (const [ip, data] of requestCounts.entries()) {
+        if (now - data.firstRequest > RATE_WINDOW) {
+            requestCounts.delete(ip);
         }
     }
-
+    
+    // Check current IP
+    const clientData = requestCounts.get(clientIP);
+    if (clientData) {
+        if (now - clientData.firstRequest < RATE_WINDOW) {
+            clientData.count++;
+            if (clientData.count > RATE_LIMIT) {
+                return res.status(429).json({
+                    success: false,
+                    message: 'Please wait 45 seconds before trying again.',
+                    retryAfter: 45
+                });
+            }
+        } else {
+            // Reset window
+            clientData.firstRequest = now;
+            clientData.count = 1;
+        }
+    } else {
+        requestCounts.set(clientIP, { firstRequest: now, count: 1 });
+    }
+    
     next();
 });
 
 // Request timeout middleware with better handling
 app.use((req, res, next) => {
-    // Set different timeouts for different routes
     let timeoutMs = 30000; // Default 30 seconds
     
     if (req.path.includes('/upload')) {
@@ -159,8 +159,8 @@ app.use((req, res, next) => {
     
     const timeout = setTimeout(() => {
         if (!res.headersSent) {
-            res.status(408).json({ 
-                success: false, 
+            res.status(408).json({
+                success: false,
                 message: 'Request timeout',
                 timeout: timeoutMs / 1000 + ' seconds'
             });
@@ -173,6 +173,26 @@ app.use((req, res, next) => {
     });
     
     next();
+});
+
+// Keep-alive endpoint for server responsiveness
+app.get('/ping', async (req, res) => {
+    try {
+        // Quick database ping
+        await global.dbPool.query('SELECT 1');
+        
+        res.json({
+            status: 'alive',
+            timestamp: new Date().toISOString(),
+            uptime: process.uptime()
+        });
+    } catch (error) {
+        res.status(500).json({
+            status: 'error',
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
 });
 
 // Routes

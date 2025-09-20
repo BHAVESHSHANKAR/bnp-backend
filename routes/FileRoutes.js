@@ -877,7 +877,8 @@ router.get('/completed-decisions', verifyAdminToken, async (req, res) => {
         if (!result.success) {
             return res.status(500).json({
                 success: false,
-                message: result.error
+                message: 'Failed to fetch completed decisions',
+                error: result.error
             });
         }
 
@@ -889,7 +890,7 @@ router.get('/completed-decisions', verifyAdminToken, async (req, res) => {
                 admin: {
                     id: req.admin.id,
                     username: req.admin.username,
-                    full_name: req.admin.full_name
+                    email: req.admin.email
                 }
             }
         });
@@ -899,6 +900,58 @@ router.get('/completed-decisions', verifyAdminToken, async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Failed to fetch completed decisions'
+        });
+    }
+});
+
+// Get next customer ID for auto-generation
+router.get('/next-customer-id', verifyAdminToken, async (req, res) => {
+    try {
+        const { bankName } = req.query;
+        
+        if (!bankName) {
+            return res.status(400).json({
+                success: false,
+                message: 'Bank name is required'
+            });
+        }
+
+        // Get the highest customer ID for this bank
+        const query = `
+            SELECT customer_id 
+            FROM customer_files 
+            WHERE customer_id LIKE $1 
+            ORDER BY 
+                CAST(SUBSTRING(customer_id FROM '[0-9]+$') AS INTEGER) DESC 
+            LIMIT 1
+        `;
+        
+        const result = await global.dbPool.query(query, [`${bankName}%`]);
+        
+        let nextId = 1;
+        if (result.rows.length > 0) {
+            const lastCustomerId = result.rows[0].customer_id;
+            const lastNumber = parseInt(lastCustomerId.replace(bankName, '')) || 0;
+            nextId = lastNumber + 1;
+        }
+
+        console.log(`📋 Next customer ID for ${bankName}: ${bankName}${nextId}`);
+
+        res.json({
+            success: true,
+            data: {
+                nextId: nextId,
+                fullCustomerId: `${bankName}${nextId}`,
+                bankName: bankName
+            }
+        });
+
+    } catch (error) {
+        console.error('Get next customer ID error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to generate next customer ID',
+            error: error.message
         });
     }
 });
