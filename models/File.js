@@ -337,6 +337,9 @@ class File {
                 mobile_number: mlData.mobile_number,
                 has_individual_results: !!mlData.individual_results,
                 has_overall_assessment: !!mlData.overall_risk_assessment,
+                overall_assessment_structure: mlData.overall_risk_assessment,
+                overall_assessment_keys: mlData.overall_risk_assessment ? Object.keys(mlData.overall_risk_assessment) : 'No keys',
+                risk_score_in_assessment: mlData.overall_risk_assessment?.overall_risk_score,
                 has_processing_summary: !!mlData.processing_summary
             });
 
@@ -418,7 +421,13 @@ class File {
         try {
             const query = `
                 SELECT ml.*, a.username as admin_username, a.full_name as admin_name,
-                       ad.decision, ad.feedback, ad.decision_timestamp
+                       ad.decision, ad.feedback, ad.decision_timestamp,
+                       COALESCE(
+                           (ml.overall_risk_assessment->>'overall_risk_score')::numeric, 
+                           0
+                       ) as overall_risk_score,
+                       ml.overall_risk_assessment->>'overall_status' as overall_status,
+                       ml.overall_risk_assessment->>'risk_category' as risk_category
                 FROM ml_results ml
                 JOIN admins a ON ml.admin_id = a.id
                 LEFT JOIN admin_decisions ad ON ml.id = ad.ml_result_id
@@ -427,6 +436,17 @@ class File {
             `;
 
             const result = await this.pool.query(query, [customerId]);
+            
+            // Log the extracted data for debugging
+            console.log('📊 ML results for customer', customerId, ':', result.rows.map(row => ({
+                id: row.id,
+                overall_risk_score: row.overall_risk_score,
+                overall_status: row.overall_status,
+                risk_category: row.risk_category,
+                has_overall_assessment: !!row.overall_risk_assessment,
+                raw_assessment: row.overall_risk_assessment // Show the actual JSON structure
+            })));
+            
             return {
                 success: true,
                 ml_results: result.rows
@@ -468,11 +488,45 @@ class File {
         }
     }
 
+    // Get completed decisions (decisions that have been made)
+    async getCompletedDecisions(adminId) {
+        try {
+            const query = `
+                SELECT ad.*, ml.customer_id, ml.person_name, ml.mobile_number,
+                       ml.overall_risk_assessment->>'overall_risk_score' as risk_score,
+                       ml.overall_risk_assessment->>'overall_status' as risk_status,
+                       ml.processing_summary->>'total_files' as total_files
+                FROM admin_decisions ad
+                JOIN ml_results ml ON ad.ml_result_id = ml.id
+                WHERE ad.admin_id = $1 AND ad.decision IN ('APPROVED', 'REJECTED')
+                ORDER BY ad.decision_timestamp DESC
+            `;
+
+            const result = await this.pool.query(query, [adminId]);
+            return {
+                success: true,
+                decisions: result.rows
+            };
+        } catch (error) {
+            console.error('Error fetching completed decisions:', error);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+
     // Get pending decisions (no admin decision yet)
     async getPendingDecisions(adminId) {
         try {
             const query = `
-                SELECT ml.*, a.username as admin_username, a.full_name as admin_name
+                SELECT ml.*, a.username as admin_username, a.full_name as admin_name,
+                       COALESCE(
+                           (ml.overall_risk_assessment->>'overall_risk_score')::numeric, 
+                           0
+                       ) as overall_risk_score,
+                       ml.overall_risk_assessment->>'overall_status' as overall_status,
+                       ml.overall_risk_assessment->>'risk_category' as risk_category
                 FROM ml_results ml
                 JOIN admins a ON ml.admin_id = a.id
                 LEFT JOIN admin_decisions ad ON ml.id = ad.ml_result_id
@@ -481,6 +535,16 @@ class File {
             `;
 
             const result = await this.pool.query(query);
+            
+            // Log the extracted data for debugging
+            console.log('📊 Pending decisions with risk scores:', result.rows.map(row => ({
+                customer_id: row.customer_id,
+                person_name: row.person_name,
+                overall_risk_score: row.overall_risk_score,
+                overall_status: row.overall_status,
+                risk_category: row.risk_category
+            })));
+            
             return {
                 success: true,
                 pending_decisions: result.rows

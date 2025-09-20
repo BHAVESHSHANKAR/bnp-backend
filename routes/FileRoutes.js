@@ -185,15 +185,55 @@ router.post('/upload/:customerId', verifyAdminToken, upload.array('files'), asyn
             console.log('✅ ML processing completed successfully');
             mlProcessingData = mlProcessingResult.data;
             
+            // Debug: Log the raw ML response structure
+            console.log('📊 Raw ML Response Structure:', {
+                has_data: !!(mlProcessingData.data),
+                top_level_keys: Object.keys(mlProcessingData),
+                data_keys: mlProcessingData.data ? Object.keys(mlProcessingData.data) : 'No data key'
+            });
+            
+            // Extract the actual data from the nested structure
+            const actualMLData = mlProcessingData.data || mlProcessingData;
+            
+            // Debug: Log the actual ML processing data structure
+            console.log('📊 Actual ML Processing Data Structure:', {
+                has_results: !!(actualMLData.results),
+                results_count: actualMLData.results?.length || 0,
+                has_overall_risk_assessment: !!(actualMLData.overall_risk_assessment),
+                overall_risk_assessment: actualMLData.overall_risk_assessment,
+                has_summary: !!(actualMLData.summary),
+                summary: actualMLData.summary
+            });
+            
+            // Use the correct data structure
+            mlProcessingData = actualMLData;
+            
             // Save ML results to database
             try {
                 console.log('💾 Saving ML results to database...');
+                
+                // Format individual results for frontend
+                const formattedResults = (mlProcessingData.results || []).map(result => ({
+                    file: result.File || result.filename || 'Unknown File',
+                    risk_score: result.Risk_Score || 0,
+                    status: result.Status || (result.Risk_Score > 50 ? 'Flagged' : 'Verified'),
+                    risk_details: result.Risk_Details || [],
+                    risk_level: result.Risk_Level || 'UNKNOWN'
+                }));
+                
+                console.log('📊 Data being saved to database:', {
+                    customer_id: customerId,
+                    individual_results_count: formattedResults.length,
+                    overall_risk_assessment: mlProcessingData.overall_risk_assessment,
+                    processing_summary: mlProcessingData.summary
+                });
+                
                 const mlSaveResult = await fileModel.saveMLResults({
                     customer_id: customerId,
                     admin_id: req.admin.id,
                     person_name: personName,
                     mobile_number: mobileNumber,
-                    individual_results: mlProcessingData.results || [],
+                    individual_results: formattedResults,
                     overall_risk_assessment: mlProcessingData.overall_risk_assessment || {},
                     processing_summary: mlProcessingData.summary || {}
                 });
@@ -460,34 +500,47 @@ router.delete('/:fileId', verifyAdminToken, async (req, res) => {
 // Get files uploaded by current admin
 router.get('/my-uploads', verifyAdminToken, async (req, res) => {
     try {
+        // Prevent multiple responses
+        if (res.headersSent) {
+            console.log('⚠️ Headers already sent for /my-uploads');
+            return;
+        }
+
         const result = await fileModel.getFilesByAdminId(req.admin.id);
 
         if (!result.success) {
-            return res.status(500).json({
-                success: false,
-                message: result.error
+            if (!res.headersSent) {
+                return res.status(500).json({
+                    success: false,
+                    message: result.error
+                });
+            }
+            return;
+        }
+
+        if (!res.headersSent) {
+            res.json({
+                success: true,
+                data: {
+                    files: result.files,
+                    total_files: result.files.length,
+                    admin: {
+                        id: req.admin.id,
+                        username: req.admin.username,
+                        full_name: req.admin.full_name
+                    }
+                }
             });
         }
 
-        res.json({
-            success: true,
-            data: {
-                files: result.files,
-                total_files: result.files.length,
-                admin: {
-                    id: req.admin.id,
-                    username: req.admin.username,
-                    full_name: req.admin.full_name
-                }
-            }
-        });
-
     } catch (error) {
         console.error('Get admin files error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to fetch admin files'
-        });
+        if (!res.headersSent) {
+            res.status(500).json({
+                success: false,
+                message: 'Failed to fetch admin files'
+            });
+        }
     }
 });
 
@@ -610,11 +663,28 @@ router.post('/decision/:customerId', verifyAdminToken, async (req, res) => {
         const { customerId } = req.params;
         const { mlResultId, decision, feedback, riskOverride, overrideReason } = req.body;
 
+        console.log('📝 Decision submission received:', {
+            customerId,
+            mlResultId,
+            decision,
+            feedback: feedback ? `${feedback.substring(0, 50)}...` : 'No feedback',
+            adminId: req.admin.id
+        });
+
         // Validation
         if (!mlResultId || !decision) {
+            console.log('❌ Validation failed: Missing mlResultId or decision');
             return res.status(400).json({
                 success: false,
                 message: 'ML result ID and decision are required'
+            });
+        }
+
+        // Make feedback compulsory for APPROVED and REJECTED decisions
+        if ((decision === 'APPROVED' || decision === 'REJECTED') && (!feedback || feedback.trim() === '')) {
+            return res.status(400).json({
+                success: false,
+                message: 'Feedback is required for Accept/Reject decisions'
             });
         }
 
@@ -628,17 +698,24 @@ router.post('/decision/:customerId', verifyAdminToken, async (req, res) => {
 
         // Check if ML result exists
         console.log(`🔍 Checking if ML result ID ${mlResultId} exists for customer ${customerId}...`);
-        const mlCheckQuery = 'SELECT id, customer_id FROM ml_results WHERE id = $1';
-        const mlCheckResult = await global.dbPool.query(mlCheckQuery, [mlResultId]);
+        const mlCheckQuery = 'SELECT id, customer_id FROM ml_results WHERE id = $1 AND customer_id = $2';
+        const mlCheckResult = await global.dbPool.query(mlCheckQuery, [mlResultId, customerId]);
+        
+        console.log(`📊 ML check result: Found ${mlCheckResult.rows.length} matching records`);
+        if (mlCheckResult.rows.length > 0) {
+            console.log(`✅ ML result found:`, mlCheckResult.rows[0]);
+        }
         
         if (mlCheckResult.rows.length === 0) {
             // Get available ML results for this customer
             const availableQuery = 'SELECT id, customer_id, processed_at FROM ml_results WHERE customer_id = $1 ORDER BY processed_at DESC';
             const availableResults = await global.dbPool.query(availableQuery, [customerId]);
             
+            console.log(`❌ ML result ID ${mlResultId} not found. Available results:`, availableResults.rows);
+            
             return res.status(400).json({
                 success: false,
-                message: `ML result ID ${mlResultId} not found`,
+                message: `ML result ID ${mlResultId} not found for customer ${customerId}`,
                 available_ml_results: availableResults.rows,
                 suggestion: availableResults.rows.length > 0 ? 
                     `Use ML result ID: ${availableResults.rows[0].id}` : 
@@ -792,11 +869,53 @@ router.get('/pending-decisions', verifyAdminToken, async (req, res) => {
     }
 });
 
+// Get completed decisions (decisions that have been made)
+router.get('/completed-decisions', verifyAdminToken, async (req, res) => {
+    try {
+        const result = await fileModel.getCompletedDecisions(req.admin.id);
+
+        if (!result.success) {
+            return res.status(500).json({
+                success: false,
+                message: result.error
+            });
+        }
+
+        res.json({
+            success: true,
+            data: {
+                decisions: result.decisions,
+                total_completed: result.decisions.length,
+                admin: {
+                    id: req.admin.id,
+                    username: req.admin.username,
+                    full_name: req.admin.full_name
+                }
+            }
+        });
+
+    } catch (error) {
+        console.error('Get completed decisions error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch completed decisions'
+        });
+    }
+});
+
 // Debug endpoint to check database contents
 router.get('/debug/database-status', verifyAdminToken, async (req, res) => {
     try {
-        // Check ML results
-        const mlQuery = 'SELECT id, customer_id, person_name, processed_at FROM ml_results ORDER BY id DESC LIMIT 10';
+        // Check ML results with risk scores
+        const mlQuery = `
+            SELECT id, customer_id, person_name, processed_at,
+                   COALESCE((overall_risk_assessment->>'overall_risk_score')::numeric, 0) as risk_score,
+                   overall_risk_assessment->>'overall_status' as status,
+                   overall_risk_assessment->>'risk_category' as category,
+                   overall_risk_assessment
+            FROM ml_results 
+            ORDER BY id DESC LIMIT 10
+        `;
         const mlResults = await global.dbPool.query(mlQuery);
         
         // Check admin decisions
@@ -830,6 +949,132 @@ router.get('/debug/database-status', verifyAdminToken, async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Failed to check database status',
+            error: error.message
+        });
+    }
+});
+
+// Test endpoint to check risk data flow
+router.get('/debug/risk-data', verifyAdminToken, async (req, res) => {
+    try {
+        // Prevent multiple responses
+        if (res.headersSent) {
+            console.log('⚠️ Headers already sent for /debug/risk-data');
+            return;
+        }
+
+        // Direct database query to see raw JSON data
+        const rawQuery = `
+            SELECT id, customer_id, 
+                   overall_risk_assessment,
+                   overall_risk_assessment->>'overall_risk_score' as extracted_score,
+                   overall_risk_assessment->>'overall_status' as extracted_status,
+                   overall_risk_assessment->>'risk_category' as extracted_category
+            FROM ml_results 
+            ORDER BY id DESC LIMIT 5
+        `;
+        const rawResult = await global.dbPool.query(rawQuery);
+        
+        console.log('🔍 Raw database JSON analysis:', rawResult.rows);
+        
+        // Get pending decisions with risk scores
+        const pendingResult = await fileModel.getPendingDecisions(req.admin.id);
+        
+        // Get recent uploads
+        const uploadsResult = await fileModel.getFilesByAdminId(req.admin.id);
+        
+        // Get ML results for each customer
+        const mlResultsData = [];
+        if (uploadsResult.success && uploadsResult.files.length > 0) {
+            const uniqueCustomers = [...new Set(uploadsResult.files.map(f => f.customer_id))];
+            
+            for (const customerId of uniqueCustomers.slice(0, 5)) { // Limit to 5 customers
+                try {
+                    const mlResult = await fileModel.getMLResultsByCustomerId(customerId);
+                    if (mlResult.success && mlResult.ml_results.length > 0) {
+                        mlResultsData.push({
+                            customer_id: customerId,
+                            ml_result: mlResult.ml_results[0]
+                        });
+                    }
+                } catch (error) {
+                    console.log(`Error getting ML results for ${customerId}:`, error.message);
+                }
+            }
+        }
+
+        if (!res.headersSent) {
+            res.json({
+                success: true,
+                data: {
+                    raw_database_analysis: rawResult.rows,
+                    pending_decisions: pendingResult.success ? pendingResult.pending_decisions : [],
+                    recent_uploads: uploadsResult.success ? uploadsResult.files : [],
+                    ml_results_sample: mlResultsData,
+                    debug_info: {
+                        pending_count: pendingResult.success ? pendingResult.pending_decisions.length : 0,
+                        uploads_count: uploadsResult.success ? uploadsResult.files.length : 0,
+                        ml_results_count: mlResultsData.length,
+                        raw_records_found: rawResult.rows.length
+                    }
+                }
+            });
+        }
+    } catch (error) {
+        console.error('Debug risk data error:', error);
+        if (!res.headersSent) {
+            res.status(500).json({
+                success: false,
+                error: error.message
+            });
+        }
+    }
+});
+
+// Endpoint to receive analysis results from frontend
+router.post('/send-analysis-to-express', verifyAdminToken, async (req, res) => {
+    try {
+        const analysisData = req.body;
+        
+        console.log('📊 Received analysis data from frontend:', {
+            customer_id: analysisData.customer_id,
+            person_name: analysisData.person_name,
+            overall_risk_score: analysisData.overall_risk_score,
+            risk_category: analysisData.risk_category,
+            file_count: analysisData.individual_files?.length || 0,
+            timestamp: analysisData.timestamp
+        });
+
+        // Here you can process the analysis data as needed
+        // For example: save to database, send to external service, generate reports, etc.
+        
+        // Mock processing - you can replace this with actual business logic
+        const processedResult = {
+            success: true,
+            message: 'Analysis data processed successfully',
+            processed_at: new Date().toISOString(),
+            analysis_summary: {
+                customer_id: analysisData.customer_id,
+                risk_level: analysisData.risk_category,
+                total_files: analysisData.individual_files?.length || 0,
+                recommendation: analysisData.overall_risk_score >= 70 ? 'REJECT' : 
+                              analysisData.overall_risk_score >= 40 ? 'REVIEW' : 'APPROVE'
+            }
+        };
+
+        console.log('✅ Analysis processing completed:', processedResult.analysis_summary);
+
+        res.json({
+            success: true,
+            message: 'Analysis data sent to Express backend successfully',
+            data: processedResult
+        });
+
+    } catch (error) {
+        console.error('❌ Error processing analysis data:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to process analysis data',
             error: error.message
         });
     }
