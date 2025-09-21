@@ -80,6 +80,7 @@ app.use(cors({
         'http://localhost:8080',
         'http://127.0.0.1:3000',
         'https://riskanalyzer-red.vercel.app',
+        'https://ml-bnp-backend.onrender.com',
         'http://127.0.0.1:3001',
         'http://127.0.0.1:8080',
         process.env.FRONTEND_URL
