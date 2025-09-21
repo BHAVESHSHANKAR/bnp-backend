@@ -7,37 +7,29 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 6969;
 
-// Optimized Database Configuration with Better Error Handling
+// Optimized Database Configuration for Fast Responses
 const pool = new Pool({
     connectionString: process.env.NEON_URI,
     ssl: {
         rejectUnauthorized: false
     },
-    connectionTimeoutMillis: 30000, // Increased timeout
-    idleTimeoutMillis: 300000, // 5 minutes idle timeout
-    max: 10, // Reduced pool size for stability
-    min: 1, // Minimum connections
-    acquireTimeoutMillis: 60000, // Increased acquire timeout
-    createTimeoutMillis: 30000,
-    destroyTimeoutMillis: 5000,
-    reapIntervalMillis: 1000,
-    createRetryIntervalMillis: 500,
+    connectionTimeoutMillis: 5000, // Reduced timeout
+    idleTimeoutMillis: 60000, // 1 minute idle timeout
+    max: 5, // Smaller pool for faster responses
+    min: 2, // Keep connections ready
+    acquireTimeoutMillis: 3000, // Faster acquire timeout
+    createTimeoutMillis: 5000,
+    destroyTimeoutMillis: 2000,
+    reapIntervalMillis: 2000,
+    createRetryIntervalMillis: 200,
     allowExitOnIdle: false,
     keepAlive: true,
-    keepAliveInitialDelayMillis: 1000
+    keepAliveInitialDelayMillis: 500
 });
 
 // Add error handling for pool
 pool.on('error', (err) => {
-    console.error('Unexpected error on idle client', err);
-});
-
-pool.on('connect', () => {
-    console.log('Database pool connected');
-});
-
-pool.on('remove', () => {
-    console.log('Database client removed from pool');
+    // Silent error handling
 });
 
 // Simplified database connection test
@@ -48,7 +40,6 @@ const testDatabaseConnection = async () => {
         client.release();
         return true;
     } catch (error) {
-        console.error('Database connection failed:', error.message);
         return false;
     }
 };
@@ -61,14 +52,13 @@ const initializeDatabase = async () => {
         const adminModel = new Admin(pool);
         await adminModel.createTable();
 
-        // Initialize File model and create table
+        // Initialize File model and create table (includes migrations)
         const File = require('./models/File');
         const fileModel = new File(pool);
         await fileModel.createTable();
         
         return true;
     } catch (error) {
-        console.error('Database initialization failed:', error);
         return false;
     }
 };
@@ -87,6 +77,7 @@ app.use(cors({
         'http://localhost:5173',
         'http://localhost:8080',
         'http://127.0.0.1:3000',
+        'https://riskanalyzer-red.vercel.app',
         'http://127.0.0.1:3001',
         'http://127.0.0.1:8080',
         process.env.FRONTEND_URL
@@ -149,12 +140,14 @@ app.use((req, res, next) => {
 
 // Request timeout middleware with better handling
 app.use((req, res, next) => {
-    let timeoutMs = 30000; // Default 30 seconds
+    let timeoutMs = 10000; // Default 10 seconds for fast responses
     
     if (req.path.includes('/upload')) {
         timeoutMs = 300000; // 5 minutes for file uploads
     } else if (req.path.includes('/download')) {
         timeoutMs = 120000; // 2 minutes for downloads
+    } else if (req.path.includes('/decision')) {
+        timeoutMs = 5000; // 5 seconds for decisions - fast feedback
     }
     
     const timeout = setTimeout(() => {
@@ -235,19 +228,41 @@ app.get('/health/db', async (req, res) => {
     }
 });
 
-// Start server with optimized initialization
+// Start server with non-blocking initialization
 const startServer = async () => {
-    // Test database connection and initialize tables
-    const dbConnected = await testDatabaseConnection();
-
-    if (dbConnected) {
-        await initializeDatabase();
-        console.log('✅ Database connected successfully');
-    }
-
-    app.listen(PORT, () => {
+    // Start the server first - don't block on database
+    const server = app.listen(PORT, () => {
         console.log(`Server is running on port ${PORT}`);
     });
+
+    // Initialize database in background with timeout protection
+    setTimeout(async () => {
+        try {
+            // Test database connection with timeout
+            const dbConnected = await Promise.race([
+                testDatabaseConnection(),
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Database connection timeout')), 15000)
+                )
+            ]);
+
+            if (dbConnected) {
+                console.log('Database connected');
+                
+                // Initialize database with timeout protection
+                await Promise.race([
+                    initializeDatabase(),
+                    new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Database initialization timeout')), 30000)
+                    )
+                ]);
+            }
+        } catch (error) {
+            // Silent error handling - no logs
+        }
+    }, 1000);
+
+    return server;
 };
 
 // Graceful shutdown

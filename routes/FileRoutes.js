@@ -4,6 +4,15 @@ const jwt = require('jsonwebtoken');
 const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
+
+// Try to import PDFKit with error handling
+let PDFDocument;
+try {
+    PDFDocument = require('pdfkit');
+} catch (error) {
+    // PDF generation will be disabled
+}
+
 const CloudinaryService = require('../services/cloudinaryService');
 const File = require('../models/File');
 const Admin = require('../models/Admin');
@@ -118,7 +127,6 @@ router.post('/upload/:customerId', verifyAdminToken, upload.array('files'), asyn
 
     try {
         const { customerId } = req.params;
-        const { personName, mobileNumber } = req.body;
         const files = req.files;
 
         // Validation
@@ -144,33 +152,11 @@ router.post('/upload/:customerId', verifyAdminToken, upload.array('files'), asyn
             return;
         }
 
-        if (!personName || !mobileNumber) {
-            if (!responsesSent) {
-                responsesSent = true;
-                return res.status(400).json({
-                    success: false,
-                    message: 'Person name and mobile number are required'
-                });
-            }
-            return;
-        }
-
-        // Validate mobile number format (basic validation)
-        const mobileRegex = /^[+]?[\d\s\-\(\)]{10,15}$/;
-        if (!mobileRegex.test(mobileNumber)) {
-            if (!responsesSent) {
-                responsesSent = true;
-                return res.status(400).json({
-                    success: false,
-                    message: 'Please provide a valid mobile number'
-                });
-            }
-            return;
-        }
+        // No additional validation needed - only customer ID and files required
 
         // No file count or size limit - allow unlimited uploads
         const totalSize = files.reduce((sum, file) => sum + file.size, 0);
-        console.log(`Processing ${files.length} files for customer ${customerId}, Person: ${personName}, Mobile: ${mobileNumber}`);
+        console.log(`Processing ${files.length} files for customer ${customerId}`);
         console.log(`Total upload size: ${(totalSize / (1024 * 1024)).toFixed(2)} MB`);
 
         // Send files to ML backend for processing
@@ -231,8 +217,8 @@ router.post('/upload/:customerId', verifyAdminToken, upload.array('files'), asyn
                 const mlSaveResult = await fileModel.saveMLResults({
                     customer_id: customerId,
                     admin_id: req.admin.id,
-                    person_name: personName,
-                    mobile_number: mobileNumber,
+                    person_name: customerId, // Use customer ID as identifier
+                    mobile_number: null, // No mobile number required
                     individual_results: formattedResults,
                     overall_risk_assessment: mlProcessingData.overall_risk_assessment || {},
                     processing_summary: mlProcessingData.summary || {}
@@ -282,10 +268,10 @@ router.post('/upload/:customerId', verifyAdminToken, upload.array('files'), asyn
                     continue;
                 }
 
-                // Add file type and person details
+                // Add file type and customer details
                 uploadResult.data.file_type = file.mimetype;
-                uploadResult.data.person_name = personName;
-                uploadResult.data.mobile_number = mobileNumber;
+                uploadResult.data.person_name = customerId; // Use customer ID as identifier
+                uploadResult.data.mobile_number = null; // No mobile number required
 
                 // Save file metadata to database with retry
                 let saveResult;
@@ -344,10 +330,6 @@ router.post('/upload/:customerId', verifyAdminToken, upload.array('files'), asyn
                     ml_processing: mlProcessingData,
                     errors: errors,
                     customer_id: customerId,
-                    person_details: {
-                        name: personName,
-                        mobile_number: mobileNumber
-                    },
                     uploaded_by: {
                         admin_id: req.admin.id,
                         username: req.admin.username,
@@ -663,17 +645,10 @@ router.post('/decision/:customerId', verifyAdminToken, async (req, res) => {
         const { customerId } = req.params;
         const { mlResultId, decision, feedback, riskOverride, overrideReason } = req.body;
 
-        console.log('📝 Decision submission received:', {
-            customerId,
-            mlResultId,
-            decision,
-            feedback: feedback ? `${feedback.substring(0, 50)}...` : 'No feedback',
-            adminId: req.admin.id
-        });
+        // Decision submission received
 
         // Validation
         if (!mlResultId || !decision) {
-            console.log('❌ Validation failed: Missing mlResultId or decision');
             return res.status(400).json({
                 success: false,
                 message: 'ML result ID and decision are required'
@@ -724,7 +699,6 @@ router.post('/decision/:customerId', verifyAdminToken, async (req, res) => {
         }
 
         // Save admin decision
-        console.log(`💾 Saving admin decision: ${decision} for customer ${customerId}...`);
         const decisionResult = await fileModel.saveAdminDecision({
             customer_id: customerId,
             ml_result_id: mlResultId,
@@ -743,7 +717,6 @@ router.post('/decision/:customerId', verifyAdminToken, async (req, res) => {
             });
         }
 
-        console.log('✅ Admin decision saved successfully');
         res.json({
             success: true,
             message: 'Admin decision saved successfully',
@@ -760,7 +733,6 @@ router.post('/decision/:customerId', verifyAdminToken, async (req, res) => {
         });
 
     } catch (error) {
-        console.error('❌ Admin decision error:', error);
         res.status(500).json({
             success: false,
             message: 'Failed to save admin decision',
@@ -1137,14 +1109,13 @@ router.post('/send-analysis-to-express', verifyAdminToken, async (req, res) => {
 router.post('/debug/save-ml-results/:customerId', verifyAdminToken, async (req, res) => {
     try {
         const { customerId } = req.params;
-        const { personName, mobileNumber } = req.body;
 
         // Create sample ML results for testing
         const sampleMLData = {
             customer_id: customerId,
             admin_id: req.admin.id,
-            person_name: personName || 'Test Person',
-            mobile_number: mobileNumber || '+1234567890',
+            person_name: customerId,
+            mobile_number: null,
             individual_results: [
                 { file: 'test1.pdf', risk_score: 30, status: 'Verified' },
                 { file: 'test2.pdf', risk_score: 55, status: 'Flagged' }
@@ -1182,6 +1153,186 @@ router.post('/debug/save-ml-results/:customerId', verifyAdminToken, async (req, 
             message: 'Failed to save test ML results',
             error: error.message
         });
+    }
+});
+
+// Download PDF Report
+router.get('/download-report/:customerId', verifyAdminToken, async (req, res) => {
+    try {
+        // Check if PDFKit is available
+        if (!PDFDocument) {
+            return res.status(500).json({
+                success: false,
+                message: 'PDF generation is currently unavailable. Please contact administrator.'
+            });
+        }
+
+        const { customerId } = req.params;
+        const adminId = req.admin.id;
+
+        // Get customer files and ML results
+        const filesResult = await fileModel.getFilesByCustomerId(customerId, adminId);
+        const mlResults = await fileModel.getMLResultsByCustomerId(customerId);
+
+        if (!filesResult.success || !mlResults.success) {
+            return res.status(404).json({
+                success: false,
+                message: 'Customer data not found'
+            });
+        }
+
+        const files = filesResult.files;
+        const mlData = mlResults.ml_results[0]; // Get the latest ML result
+
+        // Create PDF document with error handling
+        let doc;
+        try {
+            doc = new PDFDocument();
+        } catch (error) {
+            console.error('Failed to create PDF document:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'PDF creation failed',
+                error: error.message
+            });
+        }
+        
+        // Set response headers
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="Risk_Report_${customerId}.pdf"`);
+        
+        // Pipe PDF to response with error handling
+        try {
+            doc.pipe(res);
+        } catch (error) {
+            console.error('Failed to pipe PDF:', error);
+            if (!res.headersSent) {
+                return res.status(500).json({
+                    success: false,
+                    message: 'PDF streaming failed',
+                    error: error.message
+                });
+            }
+        }
+
+        // Handle PDF generation errors
+        doc.on('error', (error) => {
+            console.error('PDF generation error:', error);
+            if (!res.headersSent) {
+                res.status(500).json({
+                    success: false,
+                    message: 'PDF generation failed',
+                    error: error.message
+                });
+            }
+        });
+
+        // PDF Header
+        doc.fontSize(20).text('Risk Assessment Report', 50, 50);
+        doc.fontSize(12).text(`Generated on: ${new Date().toLocaleDateString()}`, 50, 80);
+        doc.text(`Customer ID: ${customerId}`, 50, 100);
+        
+        // Add line separator
+        doc.moveTo(50, 130).lineTo(550, 130).stroke();
+
+        let yPosition = 150;
+
+        // Overall Risk Assessment
+        if (mlData) {
+            doc.fontSize(16).text('Overall Risk Assessment', 50, yPosition);
+            yPosition += 30;
+            
+            doc.fontSize(12);
+            doc.text(`Risk Score: ${mlData.overall_risk_score || 0}/100`, 50, yPosition);
+            yPosition += 20;
+            doc.text(`Risk Status: ${mlData.overall_status || 'N/A'}`, 50, yPosition);
+            yPosition += 20;
+            doc.text(`Risk Category: ${mlData.risk_category || 'N/A'}`, 50, yPosition);
+            yPosition += 20;
+            doc.text(`Processed Date: ${new Date(mlData.processed_at).toLocaleDateString()}`, 50, yPosition);
+            yPosition += 40;
+        }
+
+        // Individual File Results
+        doc.fontSize(16).text('Individual File Analysis', 50, yPosition);
+        yPosition += 30;
+
+        if (mlData && mlData.individual_results) {
+            // individual_results is already parsed from database query
+            const individualResults = Array.isArray(mlData.individual_results) 
+                ? mlData.individual_results 
+                : (typeof mlData.individual_results === 'string' 
+                    ? JSON.parse(mlData.individual_results) 
+                    : []);
+            
+            individualResults.forEach((fileResult, index) => {
+                if (yPosition > 700) { // Add new page if needed
+                    doc.addPage();
+                    yPosition = 50;
+                }
+                
+                doc.fontSize(12);
+                doc.text(`${index + 1}. ${fileResult.file || 'Unknown File'}`, 50, yPosition);
+                yPosition += 20;
+                doc.text(`   Risk Score: ${fileResult.risk_score || 0}/100`, 70, yPosition);
+                yPosition += 15;
+                doc.text(`   Status: ${fileResult.status || 'Unknown'}`, 70, yPosition);
+                yPosition += 15;
+                
+                if (fileResult.risk_details && fileResult.risk_details.length > 0) {
+                    doc.text('   Risk Factors:', 70, yPosition);
+                    yPosition += 15;
+                    fileResult.risk_details.forEach(detail => {
+                        doc.text(`   • ${detail}`, 90, yPosition);
+                        yPosition += 12;
+                    });
+                }
+                yPosition += 10;
+            });
+        }
+
+        // Risk Assessment Rules (R01-R07)
+        if (yPosition > 600) {
+            doc.addPage();
+            yPosition = 50;
+        }
+
+        doc.fontSize(16).text('Risk Assessment Rules Applied', 50, yPosition);
+        yPosition += 30;
+
+        const rules = [
+            'R01: Document expiry date < today',
+            'R02: Country code ∈ {IR, KP, SY, RU}',
+            'R03: Blur score > 0.75 OR contrast score < 0.30',
+            'R04: Name match score < 0.60',
+            'R05: Watchlist match score > 0.5',
+            'R06: Tamper detection flag = TRUE',
+            'R07: Any rule marked as "escalate"'
+        ];
+
+        doc.fontSize(12);
+        rules.forEach(rule => {
+            doc.text(`• ${rule}`, 50, yPosition);
+            yPosition += 18;
+        });
+
+        // Footer
+        doc.fontSize(10).text('This report was generated automatically by the Risk Assessment System', 50, 750);
+
+        // Finalize PDF
+        doc.end();
+
+    } catch (error) {
+        console.error('Error generating PDF report:', error);
+        
+        // Only send error response if headers haven't been sent yet
+        if (!res.headersSent) {
+            res.status(500).json({
+                success: false,
+                message: 'Failed to generate PDF report',
+                error: error.message
+            });
+        }
     }
 });
 

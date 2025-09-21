@@ -45,7 +45,6 @@ class File {
                     ADD COLUMN person_name VARCHAR(200) DEFAULT 'Unknown Person' NOT NULL;
                 `;
                 await this.pool.query(addPersonNameQuery);
-                console.log('✅ Added person_name column to customer_files table');
             }
 
             // Check if mobile_number column exists
@@ -57,14 +56,24 @@ class File {
 
             const mobileResult = await this.pool.query(checkMobileQuery);
 
-            // Add mobile_number column if it doesn't exist
+            // Add mobile_number column if it doesn't exist (nullable)
             if (mobileResult.rows.length === 0) {
                 const addMobileQuery = `
                     ALTER TABLE customer_files 
-                    ADD COLUMN mobile_number VARCHAR(20) DEFAULT '0000000000' NOT NULL;
+                    ADD COLUMN mobile_number VARCHAR(20) DEFAULT NULL;
                 `;
                 await this.pool.query(addMobileQuery);
-                console.log('✅ Added mobile_number column to customer_files table');
+            } else {
+                // If column exists, make sure it's nullable (remove NOT NULL constraint)
+                try {
+                    const alterMobileQuery = `
+                        ALTER TABLE customer_files 
+                        ALTER COLUMN mobile_number DROP NOT NULL;
+                    `;
+                    await this.pool.query(alterMobileQuery);
+                } catch (alterError) {
+                    // If it's already nullable, this will fail but that's okay
+                }
             }
 
             // Create indexes
@@ -89,7 +98,7 @@ class File {
                     customer_id VARCHAR(100) NOT NULL,
                     admin_id INTEGER NOT NULL,
                     person_name VARCHAR(200) NOT NULL,
-                    mobile_number VARCHAR(20) NOT NULL,
+                    mobile_number VARCHAR(20),
                     individual_results JSONB NOT NULL,
                     overall_risk_assessment JSONB NOT NULL,
                     processing_summary JSONB NOT NULL,
@@ -100,6 +109,17 @@ class File {
             `;
 
             await this.pool.query(createMLResultsTableQuery);
+
+            // Make mobile_number nullable in ml_results table if it exists
+            try {
+                const alterMLMobileQuery = `
+                    ALTER TABLE ml_results 
+                    ALTER COLUMN mobile_number DROP NOT NULL;
+                `;
+                await this.pool.query(alterMLMobileQuery);
+            } catch (alterError) {
+                // If it's already nullable or doesn't exist, this will fail but that's okay
+            }
 
             // Create admin decisions table
             const createDecisionsTableQuery = `
@@ -138,7 +158,6 @@ class File {
                 await this.pool.query(indexQuery);
             }
 
-            console.log('✅ ML results and admin decisions tables created successfully');
 
             return true;
         } catch (error) {
@@ -332,18 +351,7 @@ class File {
     // Save ML processing results
     async saveMLResults(mlData) {
         try {
-            console.log('🔍 Attempting to save ML results with data:', {
-                customer_id: mlData.customer_id,
-                admin_id: mlData.admin_id,
-                person_name: mlData.person_name,
-                mobile_number: mlData.mobile_number,
-                has_individual_results: !!mlData.individual_results,
-                has_overall_assessment: !!mlData.overall_risk_assessment,
-                overall_assessment_structure: mlData.overall_risk_assessment,
-                overall_assessment_keys: mlData.overall_risk_assessment ? Object.keys(mlData.overall_risk_assessment) : 'No keys',
-                risk_score_in_assessment: mlData.overall_risk_assessment?.overall_risk_score,
-                has_processing_summary: !!mlData.processing_summary
-            });
+            // Saving ML results
 
             const query = `
                 INSERT INTO ml_results (
@@ -364,17 +372,12 @@ class File {
                 JSON.stringify(mlData.processing_summary || {})
             ];
 
-            console.log('📝 Executing ML results insert query...');
             const result = await this.pool.query(query, values);
-            
-            console.log('✅ ML results saved successfully with ID:', result.rows[0].id);
             return {
                 success: true,
                 ml_result: result.rows[0]
             };
         } catch (error) {
-            console.error('❌ Error saving ML results:', error.message);
-            console.error('❌ Full error:', error);
             return {
                 success: false,
                 error: error.message
@@ -410,7 +413,6 @@ class File {
                 decision: result.rows[0]
             };
         } catch (error) {
-            console.error('Error saving admin decision:', error);
             return {
                 success: false,
                 error: error.message
@@ -439,22 +441,13 @@ class File {
 
             const result = await this.pool.query(query, [customerId]);
             
-            // Log the extracted data for debugging
-            console.log('📊 ML results for customer', customerId, ':', result.rows.map(row => ({
-                id: row.id,
-                overall_risk_score: row.overall_risk_score,
-                overall_status: row.overall_status,
-                risk_category: row.risk_category,
-                has_overall_assessment: !!row.overall_risk_assessment,
-                raw_assessment: row.overall_risk_assessment // Show the actual JSON structure
-            })));
+            // ML results fetched
             
             return {
                 success: true,
                 ml_results: result.rows
             };
         } catch (error) {
-            console.error('Error fetching ML results:', error);
             return {
                 success: false,
                 error: error.message
@@ -540,21 +533,13 @@ class File {
 
             const result = await this.pool.query(query);
             
-            // Log the extracted data for debugging
-            console.log('📊 Pending decisions with risk scores:', result.rows.map(row => ({
-                customer_id: row.customer_id,
-                person_name: row.person_name,
-                overall_risk_score: row.overall_risk_score,
-                overall_status: row.overall_status,
-                risk_category: row.risk_category
-            })));
+            // Pending decisions fetched
             
             return {
                 success: true,
                 pending_decisions: result.rows
             };
         } catch (error) {
-            console.error('Error fetching pending decisions:', error);
             return {
                 success: false,
                 error: error.message
