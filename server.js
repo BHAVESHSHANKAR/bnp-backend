@@ -7,24 +7,26 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 6969;
 
-// Optimized Database Configuration for Fast Responses
+// Highly Optimized Database Configuration for Performance
 const pool = new Pool({
     connectionString: process.env.NEON_URI,
     ssl: {
         rejectUnauthorized: false
     },
-    connectionTimeoutMillis: 5000, // Reduced timeout
-    idleTimeoutMillis: 60000, // 1 minute idle timeout
-    max: 5, // Smaller pool for faster responses
-    min: 2, // Keep connections ready
-    acquireTimeoutMillis: 3000, // Faster acquire timeout
-    createTimeoutMillis: 5000,
-    destroyTimeoutMillis: 2000,
-    reapIntervalMillis: 2000,
-    createRetryIntervalMillis: 200,
+    connectionTimeoutMillis: 3000, // Faster connection timeout
+    idleTimeoutMillis: 30000, // Shorter idle timeout for faster recycling
+    max: 8, // Increased pool size for concurrent requests
+    min: 3, // More connections ready
+    acquireTimeoutMillis: 2000, // Faster acquire timeout
+    createTimeoutMillis: 3000, // Faster create timeout
+    destroyTimeoutMillis: 1000, // Faster destroy
+    reapIntervalMillis: 1000, // More frequent cleanup
+    createRetryIntervalMillis: 100, // Faster retry
     allowExitOnIdle: false,
     keepAlive: true,
-    keepAliveInitialDelayMillis: 500
+    keepAliveInitialDelayMillis: 200, // Faster keepalive
+    statement_timeout: 10000, // 10 second query timeout
+    query_timeout: 8000 // 8 second individual query timeout
 });
 
 // Add error handling for pool
@@ -98,9 +100,9 @@ app.use((req, res, next) => {
     next();
 });
 
-// Simple rate limiting - 100 requests per minute (very generous)
+// Optimized rate limiting - 200 requests per minute for better UX
 const requestCounts = new Map();
-const RATE_LIMIT = 100;
+const RATE_LIMIT = 200; // Increased for better user experience
 const RATE_WINDOW = 60000; // 1 minute
 
 app.use((req, res, next) => {
@@ -138,24 +140,31 @@ app.use((req, res, next) => {
     next();
 });
 
-// Request timeout middleware with better handling
+// Request timeout middleware with optimized handling
 app.use((req, res, next) => {
-    let timeoutMs = 10000; // Default 10 seconds for fast responses
+    let timeoutMs = 5000; // Default 5 seconds for fast responses
     
     if (req.path.includes('/upload')) {
         timeoutMs = 300000; // 5 minutes for file uploads
     } else if (req.path.includes('/download')) {
         timeoutMs = 120000; // 2 minutes for downloads
     } else if (req.path.includes('/decision')) {
-        timeoutMs = 5000; // 5 seconds for decisions - fast feedback
+        timeoutMs = 3000; // 3 seconds for decisions - faster feedback
+    } else if (req.path.includes('/risk-statistics')) {
+        timeoutMs = 8000; // 8 seconds for statistics - optimized query
+    } else if (req.path.includes('/pending-decisions')) {
+        timeoutMs = 6000; // 6 seconds for pending decisions
+    } else if (req.path.includes('/ml-results')) {
+        timeoutMs = 4000; // 4 seconds for ML results
     }
     
     const timeout = setTimeout(() => {
         if (!res.headersSent) {
             res.status(408).json({
                 success: false,
-                message: 'Request timeout',
-                timeout: timeoutMs / 1000 + ' seconds'
+                message: 'Request timeout - server optimizing for faster responses',
+                timeout: timeoutMs / 1000 + ' seconds',
+                suggestion: 'Try refreshing or check your connection'
             });
         }
     }, timeoutMs);

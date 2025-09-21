@@ -267,4 +267,54 @@ router.put('/change-password', verifyAdminToken, async (req, res) => {
     }
 });
 
+// Validate Token (Protected)
+router.get('/validate-token', verifyAdminToken, async (req, res) => {
+    try {
+        // If we reach here, the token is valid (verified by middleware)
+        res.json({
+            success: true,
+            message: 'Token is valid',
+            data: {
+                admin: {
+                    id: req.admin.id,
+                    username: req.admin.username,
+                    email: req.admin.email,
+                    full_name: req.admin.full_name,
+                    bank_name: req.admin.bank_name,
+                    role: req.admin.role
+                },
+                tokenValid: true,
+                timestamp: new Date().toISOString()
+            }
+        });
+    } catch (error) {
+        console.error('Token validation error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error during token validation'
+        });
+    }
+});
+
+// Logout (Protected) - Optional endpoint for cleanup
+router.post('/logout', verifyAdminToken, async (req, res) => {
+    try {
+        // In a more advanced setup, you might want to blacklist the token
+        // For now, we'll just confirm the logout
+        res.json({
+            success: true,
+            message: 'Logged out successfully',
+            data: {
+                timestamp: new Date().toISOString()
+            }
+        });
+    } catch (error) {
+        console.error('Logout error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error during logout'
+        });
+    }
+});
+
 module.exports = router;

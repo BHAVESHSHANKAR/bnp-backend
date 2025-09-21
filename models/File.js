@@ -295,20 +295,32 @@ class File {
         }
     }
 
-    // Get files uploaded by admin
+    // Get files uploaded by admin - Optimized
     async getFilesByAdminId(adminId) {
         try {
             const query = `
-                SELECT cf.*, a.username as uploaded_by_username, a.full_name as uploaded_by_name
+                SELECT 
+                    cf.id,
+                    cf.customer_id,
+                    cf.person_name,
+                    cf.original_filename,
+                    cf.file_size,
+                    cf.upload_timestamp,
+                    a.username as uploaded_by_username, 
+                    a.full_name as uploaded_by_name
                 FROM customer_files cf
                 JOIN admins a ON cf.admin_id = a.id
-                WHERE cf.admin_id = $1 AND cf.is_active = true
-                  AND cf.upload_timestamp >= NOW() - INTERVAL '24 hours'
+                WHERE cf.admin_id = $1 
+                  AND cf.is_active = true
+                  AND cf.upload_timestamp >= NOW() - INTERVAL '7 days'  -- Extended to 7 days
                 ORDER BY cf.upload_timestamp DESC
-                LIMIT 100
+                LIMIT 200  -- Increased for better coverage
             `;
 
             const result = await this.pool.query(query, [adminId]);
+            
+            console.log(`📊 Files by admin query returned ${result.rows.length} records`);
+            
             return {
                 success: true,
                 files: result.rows
@@ -420,34 +432,48 @@ class File {
         }
     }
 
-    // Get ML results by customer ID
+    // Get ML results by customer ID - Optimized
     async getMLResultsByCustomerId(customerId) {
         try {
             const query = `
-                SELECT ml.*, a.username as admin_username, a.full_name as admin_name,
-                       ad.decision, ad.feedback, ad.decision_timestamp,
-                       COALESCE(
-                           (ml.overall_risk_assessment->>'overall_risk_score')::numeric, 
-                           0
-                       ) as overall_risk_score,
-                       ml.overall_risk_assessment->>'overall_status' as overall_status,
-                       ml.overall_risk_assessment->>'risk_category' as risk_category
+                SELECT 
+                    ml.id,
+                    ml.customer_id,
+                    ml.person_name,
+                    ml.mobile_number,
+                    ml.individual_results,
+                    ml.overall_risk_assessment,
+                    ml.processing_summary,
+                    ml.processed_at,
+                    COALESCE(
+                        (ml.overall_risk_assessment->>'overall_risk_score')::numeric, 
+                        0
+                    ) as overall_risk_score,
+                    ml.overall_risk_assessment->>'overall_status' as overall_status,
+                    ml.overall_risk_assessment->>'risk_category' as risk_category,
+                    a.username as admin_username, 
+                    a.full_name as admin_name,
+                    ad.decision, 
+                    ad.feedback, 
+                    ad.decision_timestamp
                 FROM ml_results ml
                 JOIN admins a ON ml.admin_id = a.id
                 LEFT JOIN admin_decisions ad ON ml.id = ad.ml_result_id
                 WHERE ml.customer_id = $1
                 ORDER BY ml.processed_at DESC
+                LIMIT 10  -- Limit results for performance
             `;
 
             const result = await this.pool.query(query, [customerId]);
             
-            // ML results fetched
+            console.log(`📊 ML results for customer ${customerId}: ${result.rows.length} records`);
             
             return {
                 success: true,
                 ml_results: result.rows
             };
         } catch (error) {
+            console.error(`Error fetching ML results for customer ${customerId}:`, error.message);
             return {
                 success: false,
                 error: error.message
@@ -511,35 +537,42 @@ class File {
         }
     }
 
-    // Get pending decisions (no admin decision yet)
+    // Get pending decisions (no admin decision yet) - Optimized
     async getPendingDecisions(adminId) {
         try {
             const query = `
-                SELECT ml.*, a.username as admin_username, a.full_name as admin_name,
-                       COALESCE(
-                           (ml.overall_risk_assessment->>'overall_risk_score')::numeric, 
-                           0
-                       ) as overall_risk_score,
-                       ml.overall_risk_assessment->>'overall_status' as overall_status,
-                       ml.overall_risk_assessment->>'risk_category' as risk_category
+                SELECT 
+                    ml.id,
+                    ml.customer_id,
+                    ml.person_name,
+                    ml.processed_at,
+                    COALESCE(
+                        (ml.overall_risk_assessment->>'overall_risk_score')::numeric, 
+                        0
+                    ) as overall_risk_score,
+                    ml.overall_risk_assessment->>'overall_status' as overall_status,
+                    ml.overall_risk_assessment->>'risk_category' as risk_category,
+                    a.username as admin_username, 
+                    a.full_name as admin_name
                 FROM ml_results ml
                 JOIN admins a ON ml.admin_id = a.id
                 LEFT JOIN admin_decisions ad ON ml.id = ad.ml_result_id
                 WHERE ad.id IS NULL 
-                  AND ml.processed_at >= NOW() - INTERVAL '24 hours'
+                  AND ml.processed_at >= NOW() - INTERVAL '7 days'  -- Extended to 7 days
                 ORDER BY ml.processed_at DESC
-                LIMIT 50
+                LIMIT 100  -- Increased limit for better data
             `;
 
             const result = await this.pool.query(query);
             
-            // Pending decisions fetched
+            console.log(`📊 Pending decisions query returned ${result.rows.length} records`);
             
             return {
                 success: true,
                 pending_decisions: result.rows
             };
         } catch (error) {
+            console.error('Error in getPendingDecisions:', error.message);
             return {
                 success: false,
                 error: error.message

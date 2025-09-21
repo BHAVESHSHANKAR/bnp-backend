@@ -876,6 +876,118 @@ router.get('/completed-decisions', verifyAdminToken, async (req, res) => {
     }
 });
 
+// Get comprehensive risk statistics including completed cases
+router.get('/risk-statistics', verifyAdminToken, async (req, res) => {
+    try {
+        // Single optimized query to get all risk statistics
+        const query = `
+            WITH risk_data AS (
+                SELECT 
+                    ml.customer_id,
+                    COALESCE(
+                        (ml.overall_risk_assessment->>'overall_risk_score')::numeric, 
+                        0
+                    ) as risk_score,
+                    ml.overall_risk_assessment->>'overall_status' as overall_status,
+                    ml.overall_risk_assessment->>'risk_category' as risk_category,
+                    ROW_NUMBER() OVER (PARTITION BY ml.customer_id ORDER BY ml.processed_at DESC) as rn
+                FROM ml_results ml
+                LEFT JOIN admin_decisions ad ON ml.id = ad.ml_result_id
+                WHERE ad.id IS NULL  -- Only customers without decisions
+                  AND ml.processed_at >= NOW() - INTERVAL '7 days'  -- Recent data only
+            ),
+            filtered_data AS (
+                SELECT risk_score 
+                FROM risk_data 
+                WHERE rn = 1  -- Only latest result per customer
+            )
+            SELECT 
+                COUNT(*) as total_customers,
+                COUNT(CASE WHEN risk_score <= 39 THEN 1 END) as low_risk_count,
+                COUNT(CASE WHEN risk_score > 39 AND risk_score <= 69 THEN 1 END) as medium_risk_count,
+                COUNT(CASE WHEN risk_score > 69 THEN 1 END) as high_risk_count,
+                CASE 
+                    WHEN COUNT(*) > 0 THEN ARRAY_AGG(risk_score ORDER BY risk_score)
+                    ELSE ARRAY[]::numeric[]
+                END as risk_scores,
+                CASE 
+                    WHEN COUNT(*) > 0 THEN AVG(risk_score)
+                    ELSE 0
+                END as average_risk_score
+            FROM filtered_data
+        `;
+
+        const result = await global.dbPool.query(query);
+        
+        if (!result || !result.rows || result.rows.length === 0) {
+            console.log('⚠️ No data returned from risk statistics query');
+            if (!res.headersSent) {
+                return res.json({
+                    success: true,
+                    data: {
+                        statistics: {
+                            total_customers: 0,
+                            low_risk_count: 0,
+                            medium_risk_count: 0,
+                            high_risk_count: 0,
+                            risk_scores: [],
+                            average_risk_score: 0
+                        },
+                        query_performance: {
+                            execution_time: 'optimized_single_query',
+                            data_freshness: '7_days'
+                        }
+                    }
+                });
+            }
+            return;
+        }
+
+        const stats = result.rows[0];
+
+        console.log('📊 Risk Statistics Query Result:', {
+            total_customers: stats.total_customers,
+            low_risk_count: stats.low_risk_count,
+            medium_risk_count: stats.medium_risk_count,
+            high_risk_count: stats.high_risk_count,
+            average_risk_score: stats.average_risk_score,
+            risk_scores_count: stats.risk_scores?.length || 0
+        });
+
+        // Check if response has already been sent
+        if (!res.headersSent) {
+            res.json({
+                success: true,
+                data: {
+                    statistics: {
+                        total_customers: parseInt(stats.total_customers) || 0,
+                        low_risk_count: parseInt(stats.low_risk_count) || 0,
+                        medium_risk_count: parseInt(stats.medium_risk_count) || 0,
+                        high_risk_count: parseInt(stats.high_risk_count) || 0,
+                        risk_scores: stats.risk_scores || [],
+                        average_risk_score: parseFloat(stats.average_risk_score) || 0
+                    },
+                    query_performance: {
+                        execution_time: 'optimized_single_query',
+                        data_freshness: '7_days'
+                    }
+                }
+            });
+        }
+
+    } catch (error) {
+        console.error('Risk statistics error:', error);
+        // Only send error response if headers haven't been sent yet
+        if (!res.headersSent) {
+            res.status(500).json({
+                success: false,
+                message: 'Failed to fetch risk statistics',
+                error: error.message
+            });
+        }
+    }
+});
+
 // Get next customer ID for auto-generation
 router.get('/next-customer-id', verifyAdminToken, async (req, res) => {
     try {
