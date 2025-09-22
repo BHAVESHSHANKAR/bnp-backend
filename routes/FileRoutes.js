@@ -76,10 +76,19 @@ router.get('/next-customer-id', verifyAdminToken, async (req, res) => {
         const bankPrefix = bankName ? bankName.substring(0, 3).toUpperCase() : 'BNK';
         const customerId = `${bankPrefix}${timestamp}`;
         
+        console.log('🆔 Generating customer ID:', {
+            bankName,
+            bankPrefix,
+            timestamp,
+            customerId
+        });
+        
         res.json({
             success: true,
             data: {
-                customer_id: customerId,
+                nextId: timestamp, // Just the timestamp number
+                fullCustomerId: customerId, // Full customer ID with prefix
+                customer_id: customerId, // For backward compatibility
                 bank_name: bankName || 'Default Bank',
                 generated_at: new Date().toISOString()
             }
@@ -89,6 +98,99 @@ router.get('/next-customer-id', verifyAdminToken, async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Failed to generate customer ID',
+            error: error.message
+        });
+    }
+});
+
+// Upload multiple files for a customer
+router.post('/upload/:customerId', verifyAdminToken, upload.array('files'), async (req, res) => {
+    try {
+        const { customerId } = req.params;
+        const files = req.files;
+
+        console.log('📤 Upload request received:', {
+            customerId,
+            filesCount: files?.length || 0,
+            adminId: req.admin.id
+        });
+
+        // Validation
+        if (!files || files.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No files provided'
+            });
+        }
+
+        if (!customerId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Customer ID is required'
+            });
+        }
+
+        // For now, return a simple success response
+        // In a full implementation, you would:
+        // 1. Upload files to cloud storage (Cloudinary)
+        // 2. Send files to ML backend for processing
+        // 3. Save metadata to database
+        
+        const uploadResults = files.map((file, index) => ({
+            filename: file.originalname,
+            file_id: `FILE_${Date.now()}_${index}`,
+            file_size: file.size,
+            upload_timestamp: new Date().toISOString()
+        }));
+
+        // Mock ML processing results
+        const mockMLResults = {
+            overall_risk_assessment: {
+                overall_risk_score: Math.floor(Math.random() * 100),
+                overall_status: 'PROCESSED',
+                risk_category: 'MEDIUM'
+            },
+            processing_summary: {
+                total_files: files.length,
+                processed_files: files.length,
+                processing_time: '2.5s'
+            },
+            results: files.map((file, index) => ({
+                File: file.originalname,
+                Risk_Score: Math.floor(Math.random() * 100),
+                Status: Math.random() > 0.5 ? 'Verified' : 'Flagged',
+                Risk_Details: ['Document analysis completed'],
+                Risk_Level: Math.random() > 0.7 ? 'HIGH' : Math.random() > 0.4 ? 'MEDIUM' : 'LOW'
+            }))
+        };
+
+        res.json({
+            success: true,
+            message: `Processed ${files.length} files`,
+            data: {
+                uploaded_files: uploadResults,
+                ml_processing: mockMLResults,
+                errors: [],
+                customer_id: customerId,
+                uploaded_by: {
+                    admin_id: req.admin.id,
+                    username: req.admin.username,
+                    full_name: req.admin.full_name
+                },
+                summary: {
+                    total_files: files.length,
+                    successful_uploads: uploadResults.length,
+                    failed_uploads: 0,
+                    ml_processing_success: true
+                }
+            }
+        });
+
+    } catch (error) {
+        console.error('File upload error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'File upload failed',
             error: error.message
         });
     }
