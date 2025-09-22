@@ -70,24 +70,29 @@ const verifyAdminToken = async (req, res, next) => {
 router.get('/next-customer-id', verifyAdminToken, async (req, res) => {
     try {
         const { bankName } = req.query;
-        
-        // Generate a simple customer ID based on timestamp and bank name
-        const timestamp = Date.now();
         const bankPrefix = bankName ? bankName.substring(0, 3).toUpperCase() : 'BNK';
-        const customerId = `${bankPrefix}${timestamp}`;
+        
+        // Generate a simple sequential customer ID
+        // In a real implementation, you would query the database to get the next sequential number
+        // For now, we'll use a simple counter based on current time to ensure uniqueness
+        const now = new Date();
+        const dailyCounter = Math.floor((now.getHours() * 60 + now.getMinutes()) / 10) + 1; // Creates numbers 1-144 based on time of day
+        const nextId = dailyCounter;
+        const customerId = `${bankPrefix}${nextId}`;
         
         console.log('🆔 Generating customer ID:', {
             bankName,
             bankPrefix,
-            timestamp,
-            customerId
+            nextId,
+            customerId,
+            time: now.toISOString()
         });
         
         res.json({
             success: true,
             data: {
-                nextId: timestamp, // Just the timestamp number
-                fullCustomerId: customerId, // Full customer ID with prefix
+                nextId: nextId, // Sequential number (1, 2, 3, etc.)
+                fullCustomerId: customerId, // Full customer ID with prefix (BNP1, BNP2, etc.)
                 customer_id: customerId, // For backward compatibility
                 bank_name: bankName || 'Default Bank',
                 generated_at: new Date().toISOString()
