@@ -117,7 +117,10 @@ router.post('/upload/:customerId', verifyAdminToken, upload.array('files'), asyn
         console.log('📤 Upload request received:', {
             customerId,
             filesCount: files?.length || 0,
-            adminId: req.admin.id
+            adminId: req.admin?.id,
+            headers: Object.keys(req.headers),
+            contentType: req.headers['content-type'],
+            origin: req.headers.origin
         });
 
         // Validation
