@@ -72,6 +72,7 @@ const adminRoutes = require('./routes/AdminRoutes');
 const fileRoutes = require('./routes/FileRoutes');
 
 // Middleware for Admin System
+// Simplified CORS configuration for better compatibility
 app.use(cors({
     origin: [
         'http://localhost:3000',
@@ -79,16 +80,30 @@ app.use(cors({
         'http://localhost:5173',
         'http://localhost:8080',
         'http://127.0.0.1:3000',
-        'https://riskanalyzer-red.vercel.app',
-        'https://ml-bnp-backend.onrender.com',
         'http://127.0.0.1:3001',
         'http://127.0.0.1:8080',
+        'https://riskanalyzer-red.vercel.app',
+        'https://ml-bnp-backend.onrender.com',
+        'https://bnp-backend.vercel.app',
+        // Allow all Vercel deployments for now
+        /^https:\/\/.*\.vercel\.app$/,
+        /^https:\/\/.*\.netlify\.app$/,
+        /^https:\/\/.*\.onrender\.com$/,
         process.env.FRONTEND_URL
     ].filter(Boolean),
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-    exposedHeaders: ['Content-Disposition']
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: [
+        'Content-Type', 
+        'Authorization', 
+        'X-Requested-With',
+        'Accept',
+        'Origin',
+        'Access-Control-Request-Method',
+        'Access-Control-Request-Headers'
+    ],
+    exposedHeaders: ['Content-Disposition'],
+    optionsSuccessStatus: 200
 }));
 app.use(express.json({ limit: '50gb' })); // Increased limit for large files
 app.use(express.urlencoded({ extended: true, limit: '50gb' })); // Increased limit for large files
@@ -187,7 +202,8 @@ app.get('/ping', async (req, res) => {
         res.json({
             status: 'alive',
             timestamp: new Date().toISOString(),
-            uptime: process.uptime()
+            uptime: process.uptime(),
+            message: 'Server is healthy'
         });
     } catch (error) {
         res.status(500).json({
@@ -197,6 +213,8 @@ app.get('/ping', async (req, res) => {
         });
     }
 });
+
+// CORS preflight is handled automatically by the cors middleware above
 
 // Routes
 app.use('/api/admin', adminRoutes);
