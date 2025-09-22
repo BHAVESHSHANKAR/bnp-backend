@@ -506,4 +506,48 @@ router.get('/debug/risk-data', verifyAdminToken, async (req, res) => {
     }
 });
 
+// Test endpoint for CORS debugging (no auth required)
+router.get('/test-cors', async (req, res) => {
+    res.json({
+        success: true,
+        message: 'CORS test successful',
+        timestamp: new Date().toISOString(),
+        origin: req.headers.origin,
+        userAgent: req.headers['user-agent'],
+        method: req.method
+    });
+});
+
+// Test POST endpoint for upload debugging (no auth required)
+router.post('/test-upload', upload.array('files'), async (req, res) => {
+    try {
+        const files = req.files;
+        
+        console.log('🧪 Test upload received:', {
+            filesCount: files?.length || 0,
+            headers: Object.keys(req.headers),
+            contentType: req.headers['content-type'],
+            origin: req.headers.origin
+        });
+        
+        res.json({
+            success: true,
+            message: 'Test upload successful',
+            filesReceived: files?.length || 0,
+            fileDetails: files?.map(f => ({
+                name: f.originalname,
+                size: f.size,
+                type: f.mimetype
+            })) || []
+        });
+    } catch (error) {
+        console.error('Test upload error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Test upload failed',
+            error: error.message
+        });
+    }
+});
+
 module.exports = router;
